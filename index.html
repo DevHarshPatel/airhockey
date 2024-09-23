@@ -1,0 +1,676 @@
+<html><head><base href="https://websim.ai"/>
+<title> Air Hockey </title>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+<style>
+body {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    margin: 0;
+    background: #000;
+    font-family: 'Press Start 2P', cursive;
+    overflow: hidden;
+    touch-action: none;
+}
+#gameCanvas {
+    border: 10px solid #0077be;
+    border-radius: 20px;
+    box-shadow: 0 0 20px #00eeff, 0 0 40px #00eeff, 0 0 60px #00eeff;
+}
+#scoreBoard {
+    position: absolute;
+    bottom: 20px;
+    font-size: 32px;
+    font-weight: 700;
+    color: #fff;
+    text-shadow: 0 0 10px #00eeff, 0 0 20px #00eeff;
+}
+.player-score { color: #2ecc71; text-shadow: 0 0 10px #2ecc71, 0 0 20px #2ecc71; }
+.ai-score { color: #e74c3c; text-shadow: 0 0 10px #e74c3c, 0 0 20px #e74c3c; }
+</style>
+</head>
+<body>
+<div id="scoreBoard"><span class="player-score">Player: 0</span> | <span class="ai-score">AI: 0</span></div>
+<canvas id="gameCanvas" width="1125" height="600"></canvas>
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const scoreBoard = document.getElementById('scoreBoard');
+const DEFAULT_POCKET_HEIGHT = 90;
+const DEFAULT_PADDLE_HEIGHT = 100;
+let currentPocketHeight = DEFAULT_POCKET_HEIGHT;
+let currentPlayerPaddleHeight = DEFAULT_PADDLE_HEIGHT;
+let currentAIPaddleHeight = DEFAULT_PADDLE_HEIGHT;
+let deflectionCount = 0;
+const paddle = { width: 25, height: DEFAULT_PADDLE_HEIGHT, x: canvas.width - 50, y: canvas.height / 2 - 50 };
+const aiPaddle = { width: 25, height: DEFAULT_PADDLE_HEIGHT, x: 25, y: canvas.height / 2 - 50, speed: 2 };
+const MAX_PUCK_SPEED = 3.08 * 0.75 * 1.15 * 1.30 * 1.60 * 1.60 * 2; 
+const puck = { radius: 15, speed: Math.min(3.08 * 1.15 * 1.30 * 1.60 * 1.60 * 2, MAX_PUCK_SPEED) };
+const goal = { width: 10, height: 150 };
+const pocket = { width: 30, height: DEFAULT_POCKET_HEIGHT }; 
+let playerScore = 0;
+let aiScore = 0;
+let lastScoreTime = 0;
+let goalEffect = { active: false, startTime: 0, scorer: '' };
+let particles = [];
+let lastTime = 0;
+const targetFrameTime = 1000 / 60; 
+let simulationSpeedMultiplier = 0.85;
+let lastMouseX = 0;
+let lastMouseY = 0;
+let mouseSpeed = 0;
+const puckTrail = [];
+const maxTrailLength = 10;
+let powerBoost = 1;
+let isPowerShotActive = false;
+const POWER_SHOT_MULTIPLIER = 1.20;
+const PUCK_PATH_SHIFT = 0.02;
+let gameOver = false;
+let winner = '';
+let randomBumpers = [];
+let waveParticles = [];
+let isVertical = false;
+
+function resetPuck() {
+    puck.x = canvas.width / 2;
+    puck.y = canvas.height / 2;
+    puck.dx = 0;
+    puck.dy = 0;
+}
+
+function launchPuck() {
+    const angle = Math.random() * Math.PI * 2;
+    const initialSpeed = Math.min(puck.speed, MAX_PUCK_SPEED);
+    puck.dx = Math.cos(angle) * initialSpeed;
+    puck.dy = Math.sin(angle) * initialSpeed;
+}
+
+resetPuck();
+
+function drawTable() {
+    ctx.fillStyle = '#001a33';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    
+    const cornerRadius = Math.min(canvas.width, canvas.height) * 0.05;
+    ctx.beginPath();
+    ctx.moveTo(cornerRadius, 0);
+    ctx.lineTo(canvas.width - cornerRadius, 0);
+    ctx.arcTo(canvas.width, 0, canvas.width, cornerRadius, cornerRadius);
+    ctx.lineTo(canvas.width, canvas.height - cornerRadius);
+    ctx.arcTo(canvas.width, canvas.height, canvas.width - cornerRadius, canvas.height, cornerRadius);
+    ctx.lineTo(cornerRadius, canvas.height);
+    ctx.arcTo(0, canvas.height, 0, canvas.height - cornerRadius, cornerRadius);
+    ctx.lineTo(0, cornerRadius);
+    ctx.arcTo(0, 0, cornerRadius, 0, cornerRadius);
+    ctx.closePath();
+    ctx.fillStyle = '#001a33';
+    ctx.fill();
+    
+    ctx.beginPath();
+    ctx.moveTo(canvas.width / 2, 0);
+    ctx.lineTo(canvas.width / 2, canvas.height);
+    ctx.strokeStyle = '#0077be';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    
+    ctx.beginPath();
+    ctx.arc(canvas.width / 2, canvas.height / 2, 50, 0, Math.PI * 2);
+    ctx.strokeStyle = '#0077be';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    
+    ctx.fillStyle = '#222';
+    ctx.fillRect(-5, (canvas.height - currentPocketHeight) / 2, pocket.width, currentPocketHeight);
+    ctx.fillRect(canvas.width - pocket.width + 5, (canvas.height - currentPocketHeight) / 2, pocket.width, currentPocketHeight);
+    
+    ctx.shadowBlur = 20;
+    ctx.shadowColor = '#00eeff';
+    ctx.strokeStyle = '#0077be';
+    ctx.lineWidth = 4;
+    ctx.strokeRect(0, 0, canvas.width, canvas.height);
+    
+    ctx.shadowBlur = 20;
+    ctx.shadowColor = '#ff69b4'; 
+    ctx.strokeStyle = '#ff69b4';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(10, 10, canvas.width - 20, canvas.height - 20);
+    ctx.shadowBlur = 0;
+}
+
+function drawBumpers() {
+    const cornerRadius = Math.min(canvas.width, canvas.height) * 0.05;
+    const bumperRadius = cornerRadius * 1.2;
+    const corners = [
+        { x: cornerRadius, y: cornerRadius },
+        { x: canvas.width - cornerRadius, y: cornerRadius },
+        { x: cornerRadius, y: canvas.height - cornerRadius },
+        { x: canvas.width - cornerRadius, y: canvas.height - cornerRadius }
+    ];
+
+    ctx.shadowBlur = 20;
+    ctx.shadowColor = '#ff00ff';
+    ctx.fillStyle = '#ff00ff';
+    corners.forEach(corner => {
+        ctx.beginPath();
+        ctx.arc(corner.x, corner.y, bumperRadius, 0, Math.PI * 2);
+        ctx.fill();
+    });
+    ctx.shadowBlur = 0;
+}
+
+function addRandomBumpers() {
+    randomBumpers = [];
+    for (let i = 0; i < 4; i++) {
+        const side = i < 2 ? 'left' : 'right';
+        const x = side === 'left' ? Math.random() * canvas.width / 4 : canvas.width - Math.random() * canvas.width / 4;
+        const y = Math.random() * canvas.height;
+        randomBumpers.push({ x, y, radius: 20 });
+    }
+}
+
+function drawRandomBumpers() {
+    ctx.shadowBlur = 20;
+    ctx.shadowColor = '#ff00ff';
+    ctx.fillStyle = '#ff00ff';
+    randomBumpers.forEach(bumper => {
+        ctx.beginPath();
+        ctx.arc(bumper.x, bumper.y, bumper.radius, 0, Math.PI * 2);
+        ctx.fill();
+    });
+    ctx.shadowBlur = 0;
+}
+
+function handleRandomBumperCollision() {
+    randomBumpers.forEach(bumper => {
+        const dx = puck.x - bumper.x;
+        const dy = puck.y - bumper.y;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+
+        if (distance < bumper.radius + puck.radius) {
+            const randomAngle = Math.random() * Math.PI * 2;
+            const speed = Math.sqrt(puck.dx * puck.dx + puck.dy * puck.dy);
+            puck.dx = Math.cos(randomAngle) * speed * 1.5;
+            puck.dy = Math.sin(randomAngle) * speed * 1.5;
+            createExplosion(puck.x, puck.y, false);
+        }
+    });
+}
+
+function drawPaddle(x, y, w, h, isPlayer) {
+    const currentHeight = isPlayer ? currentPlayerPaddleHeight : currentAIPaddleHeight;
+    ctx.fillStyle = isPlayer ? '#2ecc71' : '#e74c3c';
+    ctx.shadowBlur = 20;
+    ctx.shadowColor = isPlayer ? '#2ecc71' : '#e74c3c';
+    ctx.fillRect(x, y, w, currentHeight);
+    ctx.shadowBlur = 0;
+}
+
+function drawPuck() {
+    ctx.beginPath();
+    ctx.arc(puck.x, puck.y, puck.radius, 0, Math.PI * 2);
+    ctx.fillStyle = '#ecf0f1';
+    ctx.shadowBlur = 20;
+    ctx.shadowColor = '#00eeff';
+    ctx.fill();
+    ctx.closePath();
+    ctx.shadowBlur = 0;
+    
+    ctx.beginPath();
+    ctx.arc(puck.x, puck.y, puck.radius * 0.8, 0, Math.PI * 2);
+    ctx.strokeStyle = '#bdc3c7';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.closePath();
+}
+
+function createExplosion(x, y, isGoal) {
+    const particleCount = isGoal ? 200 : 50;
+    const colorRange = isGoal ? 360 : 60;
+    const speedMultiplier = isGoal ? 2 : 1;
+    for (let i = 0; i < particleCount; i++) {
+        const angle = Math.random() * Math.PI * 2;
+        const speed = (Math.random() * 4 + 2) * speedMultiplier * simulationSpeedMultiplier;
+        particles.push({
+            x,
+            y,
+            radius: Math.random() * 3 + 1,
+            color: `hsl(${Math.random() * colorRange},100%,50%)`,
+            velocity: {
+                x: Math.cos(angle) * speed,
+                y: Math.sin(angle) * speed
+            },
+            alpha: 1,
+            life: Math.random() * 60 + 60
+        });
+    }
+}
+
+function drawExplosion() {
+    particles.forEach((p, i) => {
+        if (p.life <= 0) particles.splice(i, 1);
+        else {
+            p.velocity.x += 0.05 * simulationSpeedMultiplier;
+            p.x += p.velocity.x;
+            p.y += p.velocity.y;
+            p.alpha = p.life / 120;
+            p.life -= 1 * simulationSpeedMultiplier;
+            ctx.save();
+            ctx.globalAlpha = p.alpha;
+            ctx.shadowBlur = 10;
+            ctx.shadowColor = p.color;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+            ctx.fillStyle = p.color;
+            ctx.fill();
+            ctx.restore();
+        }
+    });
+}
+
+function createWaveEffect() {
+    const waveParticles = [];
+    const waveCount = 20;
+    for (let i = 0; i < waveCount; i++) {
+        waveParticles.push({
+            x: puck.x,
+            y: puck.y,
+            radius: i * 2,
+            alpha: 1 - i / waveCount
+        });
+    }
+    return waveParticles;
+}
+
+function drawWaveEffect(waveParticles) {
+    waveParticles.forEach((p, i) => {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(0, 238, 255, ${p.alpha})`;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        p.radius += 1;
+        p.alpha -= 0.02;
+        if (p.alpha <= 0) {
+            waveParticles.splice(i, 1);
+        }
+    });
+}
+
+function movePaddle(x, y) {
+    let rect = canvas.getBoundingClientRect();
+    let newX = Math.min(Math.max(x - rect.left - paddle.width / 2, canvas.width / 2), canvas.width - paddle.width);
+    let newY = Math.min(Math.max(y - rect.top - currentPlayerPaddleHeight / 2, 0), canvas.height - currentPlayerPaddleHeight);
+    
+    mouseSpeed = Math.sqrt(Math.pow(newX - paddle.x, 2) + Math.pow(newY - paddle.y, 2));
+    
+    paddle.x = newX;
+    paddle.y = newY;
+    
+    lastMouseX = x;
+    lastMouseY = y;
+}
+
+function handleMouseMove(e) {
+    movePaddle(e.clientX, e.clientY);
+}
+
+function handleTouchMove(e) {
+    e.preventDefault();
+    const touch = e.touches[0];
+    movePaddle(touch.clientX, touch.clientY);
+}
+
+canvas.addEventListener('mousedown', (e) => {
+    if (e.button === 0) { 
+        isPowerShotActive = true;
+    }
+});
+
+canvas.addEventListener('mouseup', (e) => {
+    if (e.button === 0) { 
+        isPowerShotActive = false;
+    }
+});
+
+canvas.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    powerBoost = 1.5; 
+    setTimeout(() => {
+        powerBoost = 1;
+    }, 500); 
+});
+
+function moveAIPaddle() {
+    const centerY = aiPaddle.y + currentAIPaddleHeight / 2;
+    
+    if (puck.x < canvas.width / 2) {
+        if (Math.abs(puck.y - centerY) > 5) {
+            puck.y > centerY ? aiPaddle.y += aiPaddle.speed * simulationSpeedMultiplier : aiPaddle.y -= aiPaddle.speed * simulationSpeedMultiplier;
+        }
+        if (puck.x > aiPaddle.x + aiPaddle.width + 50 && Math.abs(puck.y - centerY) < 50) {
+            aiPaddle.x += aiPaddle.speed * simulationSpeedMultiplier;
+        }
+    } else {
+        aiPaddle.y += (canvas.height / 2 - centerY) * 0.05 * simulationSpeedMultiplier;
+        aiPaddle.x += (50 - aiPaddle.x) * 0.05 * simulationSpeedMultiplier;
+    }
+    
+    aiPaddle.x = Math.min(Math.max(aiPaddle.x, 0), canvas.width / 2 - aiPaddle.width);
+    aiPaddle.y = Math.min(Math.max(aiPaddle.y, 0), canvas.height - currentAIPaddleHeight);
+}
+
+function handleCornerCollision() {
+    const cornerRadius = Math.min(canvas.width, canvas.height) * 0.05;
+    const bumperRadius = cornerRadius * 1.2;
+    const corners = [
+        { x: cornerRadius, y: cornerRadius },
+        { x: canvas.width - cornerRadius, y: cornerRadius },
+        { x: cornerRadius, y: canvas.height - cornerRadius },
+        { x: canvas.width - cornerRadius, y: canvas.height - cornerRadius }
+    ];
+
+    for (const corner of corners) {
+        const dx = puck.x - corner.x;
+        const dy = puck.y - corner.y;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+
+        if (distance < bumperRadius + puck.radius) {
+            const angle = Math.atan2(dy, dx);
+            const targetX = corner.x + Math.cos(angle) * (bumperRadius + puck.radius);
+            const targetY = corner.y + Math.sin(angle) * (bumperRadius + puck.radius);
+
+            puck.x = targetX;
+            puck.y = targetY;
+
+            const newAngle = Math.atan2(puck.dy, puck.dx);
+            const speed = Math.sqrt(puck.dx * puck.dx + puck.dy * puck.dy);
+
+            const bumperBoost = 1.5;
+            const randomAngle = Math.random() * Math.PI * 2;
+            puck.dx = Math.cos(randomAngle) * speed * bumperBoost * powerBoost;
+            puck.dy = Math.sin(randomAngle) * speed * bumperBoost * powerBoost;
+            puck.speed = Math.min(puck.speed * bumperBoost * powerBoost, MAX_PUCK_SPEED);
+
+            createExplosion(puck.x, puck.y, false);
+        }
+    }
+}
+
+function collisionDetection() {
+    handleCornerCollision();
+    handleRandomBumperCollision();
+
+    let isRebounding = false;
+
+    if (puck.y + puck.dy > canvas.height - puck.radius || puck.y + puck.dy < puck.radius) {
+        puck.dy = -puck.dy * 1.10; 
+        isRebounding = true;
+    }
+    
+    if ((puck.x + puck.dx > canvas.width - puck.radius && (puck.y <= (canvas.height - goal.height) / 2 || puck.y >= (canvas.height + goal.height) / 2)) ||
+        (puck.x + puck.dx < puck.radius && (puck.y <= (canvas.height - goal.height) / 2 || puck.y >= (canvas.height + goal.height) / 2))) {
+        puck.dx = -puck.dx * 1.10; 
+        isRebounding = true;
+    }
+
+    if (isRebounding) {
+        puck.speed = Math.min(puck.speed * 1.10, MAX_PUCK_SPEED);
+        setTimeout(() => {
+            puck.speed = Math.min(3.08 * 1.15 * 1.30 * 1.60 * 1.60 * 2, MAX_PUCK_SPEED); 
+        }, 100);
+    }
+
+    const playerCollision = puck.x + puck.radius > paddle.x &&
+                            puck.x - puck.radius < paddle.x + paddle.width &&
+                            puck.y + puck.radius > paddle.y &&
+                            puck.y - puck.radius < paddle.y + currentPlayerPaddleHeight;
+    const aiCollision = puck.x - puck.radius < aiPaddle.x + aiPaddle.width &&
+                        puck.x + puck.radius > aiPaddle.x &&
+                        puck.y + puck.radius > aiPaddle.y &&
+                        puck.y - puck.radius < aiPaddle.y + currentAIPaddleHeight;
+
+    if (playerCollision || aiCollision) {
+        const currentPaddle = playerCollision ? paddle : aiPaddle;
+        const paddleCenter = {
+            x: currentPaddle.x + (playerCollision ? 0 : currentPaddle.width),
+            y: currentPaddle.y + (playerCollision ? currentPlayerPaddleHeight : currentAIPaddleHeight) / 2
+        };
+
+        // Adjust puck position to prevent passing through paddle
+        if (playerCollision) {
+            puck.x = paddle.x - puck.radius;
+        } else {
+            puck.x = aiPaddle.x + aiPaddle.width + puck.radius;
+        }
+
+        const relativeIntersectY = paddleCenter.y - puck.y;
+        const normalizedRelativeIntersectionY = relativeIntersectY / ((playerCollision ? currentPlayerPaddleHeight : currentAIPaddleHeight) / 2);
+        const bounceAngle = normalizedRelativeIntersectionY * (Math.PI / 4);
+        
+        let speedMultiplier = 1;
+        if (playerCollision && isPowerShotActive) {
+            speedMultiplier *= POWER_SHOT_MULTIPLIER;
+        }
+        
+        puck.speed = Math.min(puck.speed + mouseSpeed * 0.02, MAX_PUCK_SPEED) * powerBoost * speedMultiplier;
+        puck.dy = -puck.speed * Math.sin(bounceAngle);
+        puck.dx = playerCollision ? -Math.abs(puck.speed * Math.cos(bounceAngle)) : Math.abs(puck.speed * Math.cos(bounceAngle));
+
+        deflectionCount++;
+        currentPocketHeight = Math.min(DEFAULT_POCKET_HEIGHT * 3, currentPocketHeight * 1.1);
+        currentPlayerPaddleHeight = Math.max(DEFAULT_PADDLE_HEIGHT / 3, currentPlayerPaddleHeight * 0.9);
+        currentAIPaddleHeight = Math.max(DEFAULT_PADDLE_HEIGHT / 3, currentAIPaddleHeight * 0.9);
+
+        waveParticles = createWaveEffect();
+    }
+
+    if (puck.x > canvas.width + puck.radius && puck.y > (canvas.height - goal.height) / 2 && puck.y < (canvas.height + goal.height) / 2) {
+        aiScore++;
+        resetGame();
+    } else if (puck.x < -puck.radius && puck.y > (canvas.height - goal.height) / 2 && puck.y < (canvas.height + goal.height) / 2) {
+        playerScore++;
+        resetGame();
+    }
+
+    if ((puck.x < pocket.width || puck.x > canvas.width - pocket.width) && 
+        puck.y > (canvas.height - currentPocketHeight) / 2 && puck.y < (canvas.height + currentPocketHeight) / 2) {
+        if (puck.x < canvas.width / 2) {
+            playerScore++;
+        } else {
+            aiScore++;
+        }
+        resetGame();
+    }
+
+    const randomShiftX = (Math.random() - 0.5) * 2 * PUCK_PATH_SHIFT * puck.dx;
+    const randomShiftY = (Math.random() - 0.5) * 2 * PUCK_PATH_SHIFT * puck.dy;
+    
+    puck.x += (puck.dx + randomShiftX) * simulationSpeedMultiplier * powerBoost;
+    puck.y += (puck.dy + randomShiftY) * simulationSpeedMultiplier * powerBoost;
+
+    puck.x = Math.min(Math.max(puck.x, puck.radius), canvas.width - puck.radius);
+    puck.y = Math.min(Math.max(puck.y, puck.radius), canvas.height - puck.radius);
+}
+
+function updateScore() {
+    scoreBoard.innerHTML = `<span class="player-score">Player: ${playerScore}</span> | <span class="ai-score">AI: ${aiScore}</span>`;
+}
+
+function drawCountdown(text) {
+    ctx.fillStyle = 'rgba(0,0,0,.5)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.font = 'bold 72px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = 'rgba(0,0,0,.5)';
+    ctx.fillText(text, canvas.width / 2 + 4, canvas.height / 2 + 4);
+    ctx.fillStyle = '#00eeff';
+    ctx.shadowBlur = 20;
+    ctx.shadowColor = '#00eeff';
+    ctx.fillText(text, canvas.width / 2, canvas.height / 2);
+    ctx.shadowBlur = 0;
+}
+
+function drawPuckTrail() {
+    puckTrail.unshift({ x: puck.x, y: puck.y });
+    if (puckTrail.length > maxTrailLength) {
+        puckTrail.pop();
+    }
+
+    const trailColor = puck.dx > 0 ? '#2ecc71' : '#e74c3c';
+    ctx.shadowBlur = 20;
+    ctx.shadowColor = trailColor;
+    ctx.beginPath();
+    ctx.moveTo(puckTrail[0].x, puckTrail[0].y);
+    puckTrail.forEach((pos, index) => {
+        const alpha = 1 - index / maxTrailLength;
+        ctx.lineTo(pos.x, pos.y);
+        ctx.lineWidth = puck.radius * (1 - index / maxTrailLength);
+        ctx.strokeStyle = `${trailColor}${Math.floor(alpha * 255).toString(16).padStart(2, '0')}`;
+        ctx.stroke();
+    });
+    ctx.closePath();
+    ctx.shadowBlur = 0;
+}
+
+function drawGameOver() {
+    ctx.fillStyle = 'rgba(0,0,0,.7)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.font = 'bold 48px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#00eeff';
+    ctx.shadowBlur = 20;
+    ctx.shadowColor = '#00eeff';
+    ctx.fillText(`Game Over! ${winner} wins!`, canvas.width / 2, canvas.height / 2);
+    ctx.font = 'bold 24px Arial';
+    ctx.fillText('Click to play again', canvas.width / 2, canvas.height / 2 + 50);
+    ctx.shadowBlur = 0;
+}
+
+function draw(currentTime) {
+    const deltaTime = currentTime - lastTime;
+    if (deltaTime < targetFrameTime) {
+        requestAnimationFrame(draw);
+        return;
+    }
+    lastTime = currentTime - (deltaTime % targetFrameTime);
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    
+    if (isVertical) {
+        ctx.save();
+        ctx.translate(canvas.width, 0);
+        ctx.rotate(Math.PI / 2);
+    }
+    
+    drawTable();
+    drawBumpers();
+    drawRandomBumpers();
+    drawPuckTrail();
+    drawPaddle(paddle.x, paddle.y, paddle.width, paddle.height, true);
+    drawPaddle(aiPaddle.x, aiPaddle.y, aiPaddle.width, aiPaddle.height, false);
+    drawPuck();
+    drawExplosion();
+    
+    if (isVertical) {
+        ctx.restore();
+    }
+
+    const now = Date.now();
+    const sinceLastScore = (now - lastScoreTime) * simulationSpeedMultiplier;
+    
+    if (gameOver) {
+        drawGameOver();
+    } else {
+        if (sinceLastScore <= 3000) {
+            if (sinceLastScore < 1000) drawCountdown("3");
+            else if (sinceLastScore < 2000) drawCountdown("2");
+            else if (sinceLastScore < 3000) drawCountdown("1");
+        } else if (sinceLastScore < 3500) {
+            drawCountdown("Go!");
+        } else {
+            collisionDetection();
+            moveAIPaddle();
+        }
+    
+        if (sinceLastScore === 3500) launchPuck();
+    
+        if (goalEffect.active) {
+            const elapsedTime = (now - goalEffect.startTime) * simulationSpeedMultiplier;
+            if (elapsedTime < 1500) {
+                ctx.font = 'bold 36px Arial';
+                ctx.fillStyle = goalEffect.scorer === 'Player' ? '#2ecc71' : '#e74c3c';
+                ctx.textAlign = 'center';
+                ctx.shadowBlur = 20;
+                ctx.shadowColor = goalEffect.scorer === 'Player' ? '#2ecc71' : '#e74c3c';
+                const yPos = canvas.height / 4 + Math.sin(elapsedTime / 100) * 10;
+                ctx.fillText(goalEffect.scorer === 'Player' ? 'Player scored!' : 'AI scored!', canvas.width / 2, yPos);
+                ctx.font = 'bold 48px Arial';
+                ctx.fillText(goalEffect.scorer === 'Player' ? playerScore : aiScore, canvas.width / 2, yPos + 50);
+                ctx.shadowBlur = 0;
+            } else {
+                goalEffect.active = false;
+            }
+        }
+    
+        updateScore();
+        drawWaveEffect(waveParticles);
+    }
+    
+    requestAnimationFrame(draw);
+}
+
+document.addEventListener('mousemove', handleMouseMove, false);
+document.addEventListener('touchmove', handleTouchMove, { passive: false });
+document.addEventListener('touchstart', handleTouchMove, { passive: false });
+
+paddle.x = canvas.width - paddle.width;
+aiPaddle.x = 0;
+
+function resetGame() {
+    resetPuck();
+    lastScoreTime = Date.now();
+    goalEffect = { active: true, startTime: Date.now(), scorer: puck.x < canvas.width / 2 ? 'Player' : 'AI' };
+    createExplosion(puck.x < canvas.width / 2 ? 0 : canvas.width, canvas.height / 2, true);
+    
+    currentPocketHeight = DEFAULT_POCKET_HEIGHT;
+    currentPlayerPaddleHeight = DEFAULT_PADDLE_HEIGHT;
+    currentAIPaddleHeight = DEFAULT_PADDLE_HEIGHT;
+    deflectionCount = 0;
+    addRandomBumpers();
+
+    if (playerScore >= 10 || aiScore >= 10) {
+        gameOver = true;
+        winner = playerScore >= 10 ? 'Player' : 'AI';
+    }
+}
+
+canvas.addEventListener('click', () => {
+    if (gameOver) {
+        gameOver = false;
+        winner = '';
+        playerScore = 0;
+        aiScore = 0;
+        resetGame();
+    }
+});
+
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'r' || e.key === 'R') {
+        toggleOrientation();
+    }
+});
+
+function toggleOrientation() {
+    isVertical = !isVertical;
+    const temp = canvas.width;
+    canvas.width = canvas.height;
+    canvas.height = temp;
+    resetGame();
+}
+
+requestAnimationFrame(draw);
+</script>
+</body></html>
